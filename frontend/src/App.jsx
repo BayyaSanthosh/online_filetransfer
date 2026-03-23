@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import './index.css';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+// In production on Vercel, we use the Serverless Function at /api.
+// In local development, we default to the local Express backend on port 5000.
+const API_URL = import.meta.env.PROD ? '/api' : 'http://localhost:5000';
+
 
 function App() {
     const [activeTab, setActiveTab] = useState('send');
@@ -64,7 +67,8 @@ function App() {
             const response = await fetch(`${API_URL}/download/${receiverCode}`);
             if (response.ok) {
                 // If OK, trigger download
-                window.open(`${API_URL}/download/${receiverCode}`, '_blank');
+                const downloadUrl = import.meta.env.PROD ? `/api/download/${receiverCode}` : `${API_URL}/download/${receiverCode}`;
+                window.open(downloadUrl, '_blank');
                 setMessage({ text: 'Download started!', type: 'success' });
             } else {
                 const errorText = await response.text();
