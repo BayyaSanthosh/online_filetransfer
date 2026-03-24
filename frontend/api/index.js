@@ -9,27 +9,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Determine upload directory: /tmp for Vercel, local uploads otherwise
-const uploadDir = process.env.VERCEL ? '/tmp/uploads' : path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Storage configuration
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
-  }
-});
-
-const upload = multer({ storage: storage });
+// Use memory storage to avoid filesystem issues on Vercel serverless
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
 // In-memory store for file codes (Code -> File Info)
-// NOTE: On Vercel this clears between container reboots, but works for quick ephemeral testing
+// NOTE: On Vercel this resets between cold starts, but works for quick transfers
 const fileStore = new Map();
 
 // Helper to generate a random 6-digit code
@@ -37,31 +22,42 @@ function generateCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Upload endpoint
-app.post('/api/upload', upload.single('file'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).send('No file uploaded.');
-  }
+// Upload endpoint - multer v2 requires async/await
+app.post('/api/upload', async (req, res) => {
+  try {
+    // multer v2: call as a promise
+    await new Promise((resolve, reject) => {
+      upload.single('file')(req, res, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
 
-  const code = generateCode();
-  const fileInfo = {
-    originalName: req.file.originalname,
-    path: req.file.path,
-    expiry: Date.now() + 60 * 1000 // 1 minute
-  };
-
-  fileStore.set(code, fileInfo);
-
-  // Set timeout to delete file and entry after 1 minute
-  setTimeout(() => {
-    if (fs.existsSync(fileInfo.path)) {
-      fs.unlinkSync(fileInfo.path);
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded.' });
     }
-    fileStore.delete(code);
-    console.log(`File with code ${code} expired and deleted.`);
-  }, 60 * 1000);
 
-  res.json({ code, expiryIn: 60 });
+    const code = generateCode();
+    const fileInfo = {
+      originalName: req.file.originalname,
+      buffer: req.file.buffer,
+      mimetype: req.file.mimetype,
+      expiry: Date.now() + 60 * 1000, // 1 minute
+    };
+
+    fileStore.set(code, fileInfo);
+
+    // Set timeout to delete entry after 1 minute
+    setTimeout(() => {
+      fileStore.delete(code);
+      console.log(`File with code ${code} expired and deleted.`);
+    }, 60 * 1000);
+
+    res.json({ code, expiryIn: 60 });
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Upload failed: ' + err.message });
+  }
 });
 
 // Download endpoint
@@ -78,7 +74,9 @@ app.get('/api/download/:code', (req, res) => {
     return res.status(410).send('File has expired.');
   }
 
-  res.download(fileInfo.path, fileInfo.originalName);
+  res.setHeader('Content-Disposition', `attachment; filename="${fileInfo.originalName}"`);
+  res.setHeader('Content-Type', fileInfo.mimetype || 'application/octet-stream');
+  res.send(fileInfo.buffer);
 });
 
 // Export for Vercel

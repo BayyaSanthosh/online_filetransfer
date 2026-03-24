@@ -66,9 +66,23 @@ function App() {
         try {
             const response = await fetch(`${API_URL}/download/${receiverCode}`);
             if (response.ok) {
-                // If OK, trigger download
-                const downloadUrl = import.meta.env.PROD ? `/api/download/${receiverCode}` : `${API_URL}/download/${receiverCode}`;
-                window.open(downloadUrl, '_blank');
+                // Get filename from Content-Disposition header
+                const disposition = response.headers.get('Content-Disposition');
+                let filename = 'download';
+                if (disposition) {
+                    const match = disposition.match(/filename="?([^"]+)"?/);
+                    if (match) filename = match[1];
+                }
+                // Blob-based download works reliably on Vercel
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
                 setMessage({ text: 'Download started!', type: 'success' });
             } else {
                 const errorText = await response.text();
